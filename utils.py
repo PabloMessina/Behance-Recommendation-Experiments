@@ -60,7 +60,7 @@ def bar_chart(ax, col_heights, col_labels, xlabel, ylabel, title,
             for rect, txt in zip(rects, col_texts):
                 ax.text(rect.get_width() + delta, rect.get_y() + rect.get_height() * 0.5,
                         txt, ha='left', va='center', fontsize=fontsize_col_text)
-                
+
 def long_tail_barchart(numbers, threshold, xlabel, ylabel, title, figsize=None, **kwargs):
     
     count_map = dict()
@@ -92,8 +92,7 @@ def long_tail_barchart(numbers, threshold, xlabel, ylabel, title, figsize=None, 
     
     import matplotlib.pyplot as plt
     fig, ax = plt.subplots(figsize=figsize)
-    bar_chart(ax, col_heights, col_labels, xlabel, ylabel, title, col_texts=col_texts, vertical=True, **kwargs)
-    
+    bar_chart(ax, col_heights, col_labels, xlabel, ylabel, title, col_texts=col_texts, vertical=True, **kwargs)    
 
 def load_behance_features(path):
     import struct
@@ -105,15 +104,91 @@ def load_behance_features(path):
     print ('bytes:', filesize)
     print('n_items:', n_items)
     
-    f = open(path, 'rb')
-    item_ids = np.empty((n_items,))
-    featmat = np.empty((n_items, 4096))
-    for i in range(n_items):
-        item_ids[i] = int(f.read(8))
-        featmat[i] = struct.unpack('f'*4096, f.read(4*4096))
+    item_ids = np.empty((n_items,), dtype=int)
+    featmat = np.empty((n_items, 4096), dtype=float)
+    with open(path, 'rb') as f:
+        for i in range(n_items):
+            item_ids[i] = int(f.read(8))
+            featmat[i] = struct.unpack('f'*4096, f.read(4*4096))
     item_id2index = {_id:i for i,_id in enumerate(item_ids)}
     return dict(
         ids=item_ids,
         id2index=item_id2index,
         featmat=featmat,
     )
+
+def load_behance_item_ids_with_features(path):
+    import numpy as np
+    from os.path import getsize
+
+    filesize = getsize(path)
+    n_items = filesize // (8 + 4*4096)
+    print ('bytes:', filesize)
+    print('n_items:', n_items)
+    
+    item_ids = np.empty((n_items,), dtype=int)
+    with open(path, 'rb') as f:
+        for i in range(n_items):
+            item_ids[i] = int(f.read(8))
+            f.seek(4*4096, 1)
+    item_id2index = {_id:i for i,_id in enumerate(item_ids)}
+    assert len(item_ids) == len(item_id2index)
+    assert len(item_ids) == n_items
+    return dict(
+        ids=item_ids,
+        id2index=item_id2index,
+    )
+
+def pairs2dict(pairs):
+    tmp = dict()
+    for x,y in pairs:
+        try:
+            tmp[x].append(y)
+        except KeyError:
+            tmp[x] = [y]
+    return tmp
+
+def AUC(relevant_positions, inventory_size):
+    n = len(relevant_positions)
+    assert inventory_size >= n
+    if inventory_size == n:
+        return 1
+    auc = 0
+    for i, idx in enumerate(relevant_positions):
+        auc += ((inventory_size - (idx+1)) - (n - (i+1))) / (inventory_size - n)
+    auc /= n
+    return auc
+
+def run_experiment(compute_AUC_func, save_dir_path, method_name):    
+    assert save_dir_path[-1] == '/'
+    import numpy as np
+    from time import time
+    
+    start_t = time()
+    
+    # load train/test data
+    train_array = np.load('/mnt/workspace/Behance/train.npy')
+    test_pos_array = np.load('/mnt/workspace/Behance/test_pos.npy')
+    test_neg_array = np.load('/mnt/workspace/Behance/test_neg.npy')
+    test_users = np.load('/mnt/workspace/Behance/test_users.npy')
+    
+    # regroup data into dictionaries
+    user2items_train = pairs2dict(train_array)
+    user2items_test_pos = pairs2dict(test_pos_array)
+    user2items_test_neg = pairs2dict(test_neg_array)
+    
+    # compute AUC for each test instance
+    aucs = np.empty((len(test_users),))
+    for j, u in enumerate(test_users):
+        train_items = user2items_train[u]
+        test_pos_items = user2items_test_pos[u]
+        test_neg_items = user2items_test_neg[u]    
+        aucs[j] = compute_AUC_func(train_items, test_pos_items, test_neg_items)
+        
+    # save results
+    from os import makedirs
+    makedirs(save_dir_path, exist_ok=True)
+    output_path = '%s%s_aucs.npy' % (save_dir_path, method_name)
+    np.save(output_path, aucs)
+    print('experiment successfully finished: results saved to %s' % output_path)
+    print('\t elapsed_seconds = %.2f, mean_AUC = %.5f' % (time() - start_t, aucs.mean()))
