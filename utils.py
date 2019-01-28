@@ -148,6 +148,17 @@ def pairs2dict(pairs):
             tmp[x] = [y]
     return tmp
 
+def tuples2dict(tuples):
+    tmp = dict()
+    for t in tuples:
+        x = t[0]
+        y = t[1:]
+        try:
+            tmp[x].append(y)
+        except KeyError:
+            tmp[x] = [y]
+    return tmp
+
 def AUC(relevant_positions, inventory_size):
     n = len(relevant_positions)
     assert inventory_size >= n
@@ -173,17 +184,75 @@ def run_experiment(compute_AUC_func, save_dir_path, method_name):
     test_users = np.load('/mnt/workspace/Behance/test_users.npy')
     
     # regroup data into dictionaries
-    user2items_train = pairs2dict(train_array)
-    user2items_test_pos = pairs2dict(test_pos_array)
+    user2items_train = pairs2dict(train_array[:,:2])
+    user2items_test_pos = pairs2dict(test_pos_array[:,:2])
     user2items_test_neg = pairs2dict(test_neg_array)
     
     # compute AUC for each test instance
-    aucs = np.empty((len(test_users),))
+    aucs = np.empty((len(test_users),), dtype=float)
     for j, u in enumerate(test_users):
         train_items = user2items_train[u]
         test_pos_items = user2items_test_pos[u]
         test_neg_items = user2items_test_neg[u]    
         aucs[j] = compute_AUC_func(train_items, test_pos_items, test_neg_items)
+        
+    # save results
+    from os import makedirs
+    makedirs(save_dir_path, exist_ok=True)
+    output_path = '%s%s_aucs.npy' % (save_dir_path, method_name)
+    np.save(output_path, aucs)
+    print('experiment successfully finished: results saved to %s' % output_path)
+    print('\t elapsed_seconds = %.2f, mean_AUC = %.5f' % (time() - start_t, aucs.mean()))
+
+def run_experiment__timeaware(process_like_func, compute_AUC_func, save_dir_path, method_name):
+    assert save_dir_path[-1] == '/'
+    import numpy as np
+    from time import time
+    
+    start_t = time()
+    
+    # load train/test data
+    train_array = np.load('/mnt/workspace/Behance/train.npy')
+    test_pos_array = np.load('/mnt/workspace/Behance/test_pos.npy')
+    test_neg_array = np.load('/mnt/workspace/Behance/test_neg.npy')
+    test_users = np.load('/mnt/workspace/Behance/test_users.npy')
+    
+    user2index = {u:i for i,u in enumerate(test_users)}
+    user2pairs_test_pos = tuples2dict(test_pos_array)
+    user2items_test_neg = pairs2dict(test_neg_array)
+    
+    # collect events
+    events = []    
+    for u, i, t in train_array:
+        events.append((t,u,i,0))
+    for u, pairs in user2pairs_test_pos.items():
+        assert all(pairs[i][1] == pairs[i-1][1] for i in range(len(pairs)))
+        t = pairs[0][1]
+        items = [p[0] for p in pairs]
+        events.append((t,u,items,1))
+    events.sort(key=lambda e:e[0])
+    print('len(events) = ', len(events))
+    
+    # compute AUC for each test instance
+    n_test_users = len(test_users)
+    tested_users = set()
+    aucs = np.full((n_test_users,),-1, dtype=float)
+    for event in events:
+        etype = event[3]
+        if etype == 0: # train
+            t,u,i,_ = event
+            assert type(i) is np.int64
+            process_like_func(u,i,t)
+        else: # test pos
+            t,u,pos_items,_ = event
+            assert etype == 1
+            assert type(pos_items) is list
+            assert len(pos_items) > 0
+            neg_items = user2items_test_neg[u]            
+            aucs[user2index[u]] = compute_AUC_func(u, pos_items, neg_items, t)
+            tested_users.add(u)
+    assert aucs.min() >= 0
+    assert len(tested_users) == n_test_users
         
     # save results
     from os import makedirs
