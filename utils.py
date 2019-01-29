@@ -329,3 +329,23 @@ def avgsimtopk(i, js, simfunc, k):
             else:
                 totsim -= heapq.heappushpop(h, s)
         return totsim / k
+
+def list_filepaths(rootDir):
+    import os
+    fileList = list()
+    for dir_, _, files in os.walk(rootDir):
+        for fileName in files:
+            fileList.append(os.path.join(dir_, fileName))
+    return fileList
+
+def load_experiment_results(experiment_files):
+    from pandas import DataFrame
+    from numpy import load
+    from os.path import splitext, basename
+    names = []
+    aucs = []
+    data = dict(NAME=names,AUC=aucs)
+    for f in experiment_files:
+        names.append(splitext(basename(f))[0][:-5])
+        aucs.append(load(f).mean())
+    return DataFrame(data, columns=['NAME', 'AUC'])
