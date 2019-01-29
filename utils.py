@@ -193,7 +193,7 @@ def run_experiment(compute_AUC_func, save_dir_path, method_name):
     for j, u in enumerate(test_users):
         train_items = user2items_train[u]
         test_pos_items = user2items_test_pos[u]
-        test_neg_items = user2items_test_neg[u]    
+        test_neg_items = user2items_test_neg[u]
         aucs[j] = compute_AUC_func(train_items, test_pos_items, test_neg_items)
         
     # save results
@@ -204,6 +204,46 @@ def run_experiment(compute_AUC_func, save_dir_path, method_name):
     print('experiment successfully finished: results saved to %s' % output_path)
     print('\t elapsed_seconds = %.2f, mean_AUC = %.5f' % (time() - start_t, aucs.mean()))
 
+def run_multiple_experiments(compute_AUC_func_list, method_name_list, save_dir_path):
+    assert save_dir_path[-1] == '/'
+    assert len(compute_AUC_func_list) == len(method_name_list)
+    import numpy as np
+    from time import time
+    
+    # load train/test data
+    train_array = np.load('/mnt/workspace/Behance/train.npy')
+    test_pos_array = np.load('/mnt/workspace/Behance/test_pos.npy')
+    test_neg_array = np.load('/mnt/workspace/Behance/test_neg.npy')
+    test_users = np.load('/mnt/workspace/Behance/test_users.npy')
+    
+    # regroup data into dictionaries
+    user2items_train = pairs2dict(train_array[:,:2])
+    user2items_test_pos = pairs2dict(test_pos_array[:,:2])
+    user2items_test_neg = pairs2dict(test_neg_array)    
+    
+    from os import makedirs
+    makedirs(save_dir_path, exist_ok=True)
+    aucs = np.empty((len(test_users),), dtype=float)
+    
+    for compute_AUC_func, method_name in zip(compute_AUC_func_list, method_name_list):
+        print('\n========================================================')
+        print('----- starting experiment %s ----' % method_name)
+        start_t = time()
+        
+        # compute AUC for each test instance        
+        for j, u in enumerate(test_users):
+            train_items = user2items_train[u]
+            test_pos_items = user2items_test_pos[u]
+            test_neg_items = user2items_test_neg[u]
+            aucs[j] = compute_AUC_func(train_items, test_pos_items, test_neg_items)
+
+        # save results
+        output_path = '%s%s_aucs.npy' % (save_dir_path, method_name)
+        np.save(output_path, aucs)
+        print('experiment successfully finished: results saved to %s' % output_path)
+        print('\t elapsed_seconds = %.2f, mean_AUC = %.5f' % (time() - start_t, aucs.mean()))
+
+    
 def run_experiment__timeaware(process_like_func, compute_AUC_func, save_dir_path, method_name):
     assert save_dir_path[-1] == '/'
     import numpy as np
@@ -251,6 +291,8 @@ def run_experiment__timeaware(process_like_func, compute_AUC_func, save_dir_path
             neg_items = user2items_test_neg[u]            
             aucs[user2index[u]] = compute_AUC_func(u, pos_items, neg_items, t)
             tested_users.add(u)
+            for i in pos_items:
+                process_like_func(u,i,t)
     assert aucs.min() >= 0
     assert len(tested_users) == n_test_users
         
@@ -261,3 +303,29 @@ def run_experiment__timeaware(process_like_func, compute_AUC_func, save_dir_path
     np.save(output_path, aucs)
     print('experiment successfully finished: results saved to %s' % output_path)
     print('\t elapsed_seconds = %.2f, mean_AUC = %.5f' % (time() - start_t, aucs.mean()))
+    
+def maxsim(i, js, simfunc):
+#     print('     maxsim()')
+    return max(simfunc(i,j) for j in js)
+
+def avgsim(i, js, simfunc):
+#     print('     avgsim()')
+    return sum(simfunc(i,j) for j in js) / len(js)
+
+def avgsimtopk(i, js, simfunc, k):
+#     print('     avgsimtop%d()' % k)
+    n = len(js)
+    if n <= k:
+        return sum(simfunc(i,j) for j in js) / n
+    else:
+        import heapq
+        h = []
+        totsim = 0
+        for j in js:
+            s = simfunc(i, j)
+            totsim += s
+            if len(h) < k:
+                heapq.heappush(h, s)
+            else:
+                totsim -= heapq.heappushpop(h, s)
+        return totsim / k
